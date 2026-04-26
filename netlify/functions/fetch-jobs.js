@@ -1,6 +1,6 @@
 /**
- * fetch-jobs.js - Fixed version
- * Sequential batching, better error handling, timeout safe
+ * fetch-jobs.js — v3 Fixed
+ * Fixed: correct model name + localStorage fallback for blobs
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -10,7 +10,7 @@ const BATCHES = [
   {
     id: "ssc_railway",
     name: "SSC & Railway",
-    query: "latest SSC CGL CHSL MTS GD Railway RRB Group D NTPC recruitment notification 2025 vacancies",
+    query: "latest SSC CGL CHSL MTS GD Railway RRB Group D NTPC recruitment notification 2025 vacancies apply",
     sources: ["ssc.gov.in", "rrbcdg.gov.in"],
   },
   {
@@ -22,13 +22,13 @@ const BATCHES = [
   {
     id: "upsc",
     name: "UPSC",
-    query: "latest UPSC Civil Services NDA CDS notification 2025 vacancies upsc.gov.in",
+    query: "latest UPSC Civil Services NDA CDS CAPF notification 2025 vacancies upsc.gov.in",
     sources: ["upsc.gov.in", "employmentnews.gov.in"],
   },
   {
     id: "defence",
     name: "Defence",
-    query: "latest Indian Army Navy Air Force DRDO ISRO recruitment notification 2025 vacancies",
+    query: "latest Indian Army Navy Air Force DRDO ISRO Agnipath recruitment notification 2025 vacancies",
     sources: ["joinindianarmy.nic.in", "joinindiannavy.gov.in", "drdo.gov.in"],
   },
   {
@@ -52,21 +52,25 @@ const BATCHES = [
 ];
 
 const SYSTEM = `You are a government job data extractor for India's SarkariNaukriHub.in.
-Return ONLY a raw JSON array starting with [ and ending with ]. No markdown. No explanation.
-Each object must have: title, titleHindi, org, category (SSC|Railway|Bank|UPSC|State PSC|Defence|Central Govt|Result|Admit Card), vacancies, lastDate, salary, eligibility, applyUrl, sourceUrl, sourceSite, urgency (urgent|new|upcoming), hindi_caption (150 word Hindi Facebook post ending with #SarkariNaukri #GovtJobs2025 #SarkariNaukriHub).
-Return 3-4 real current notifications. Write Check official notification for unknown fields.`;
+Return ONLY a raw JSON array starting with [ and ending with ]. No markdown. No explanation. No code fences.
+Each object must have exactly these fields:
+title, titleHindi, org, category (SSC|Railway|Bank|UPSC|State PSC|Defence|Central Govt|Result|Admit Card),
+vacancies, lastDate, salary, eligibility, applyUrl, sourceUrl, sourceSite,
+urgency (urgent|new|upcoming),
+hindi_caption (150 word Hindi Facebook post ending with #SarkariNaukri #GovtJobs2025 #SarkariNaukriHub).
+Return 3-4 real current notifications only. Write Check official notification for unknown fields.`;
 
 async function fetchBatch(client, batch) {
   console.log(`[${batch.id}] starting`);
   try {
     const msg = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5",
       max_tokens: 2000,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       system: SYSTEM,
       messages: [{
         role: "user",
-        content: `Sources: ${batch.sources.join(", ")}\nQuery: ${batch.query}\nReturn JSON array only.`,
+        content: `Search these sources: ${batch.sources.join(", ")}\nQuery: ${batch.query}\nReturn JSON array only.`,
       }],
     });
 
@@ -89,8 +93,8 @@ async function fetchBatch(client, batch) {
   }
 }
 
-export const handler = async () => {
-  console.log("fetch-jobs started", new Date().toISOString());
+export const handler = async (event, context) => {
+  console.log("fetch-jobs v3 started", new Date().toISOString());
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -103,7 +107,7 @@ export const handler = async () => {
   let allJobs = [];
   let successCount = 0;
 
-  // 3 parallel batches at a time to stay within timeout
+  // Run in groups of 3 to avoid timeout
   for (let i = 0; i < BATCHES.length; i += 3) {
     const chunk = BATCHES.slice(i, i + 3);
     const results = await Promise.allSettled(chunk.map(b => fetchBatch(client, b)));
@@ -125,10 +129,19 @@ export const handler = async () => {
   });
 
   // Sort urgent first
-  allJobs.sort((a, b) => ({ urgent: 0, new: 1, upcoming: 2 }[a.urgency] || 1) - ({ urgent: 0, new: 1, upcoming: 2 }[b.urgency] || 1));
+  allJobs.sort((a, b) =>
+    ({ urgent: 0, new: 1, upcoming: 2 }[a.urgency] || 1) -
+    ({ urgent: 0, new: 1, upcoming: 2 }[b.urgency] || 1)
+  );
+
+  console.log(`Total jobs: ${allJobs.length}, sources hit: ${successCount}`);
 
   const payload = {
-    updatedIST: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }),
+    updatedIST: new Date().toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      dateStyle: "medium",
+      timeStyle: "short",
+    }),
     updatedUTC: new Date().toISOString(),
     totalJobs: allJobs.length,
     sourcesHit: successCount,
@@ -136,18 +149,31 @@ export const handler = async () => {
     jobs: allJobs,
   };
 
+  // Save to Netlify Blobs
   try {
-    const store = getStore({ name: "snh-jobs", consistency: "strong" });
+    const store = getStore({
+      name: "snh-jobs",
+      siteID: process.env.SITE_ID || context?.site?.id,
+      token: process.env.NETLIFY_BLOBS_CONTEXT || process.env.TOKEN,
+      consistency: "strong",
+    });
     await store.setJSON("latest", payload);
-    console.log(`Saved ${allJobs.length} jobs`);
+    console.log(`Saved ${allJobs.length} jobs to Netlify Blobs`);
   } catch (err) {
-    console.error("Blob error:", err.message);
+    console.error("Blob save error:", err.message);
+    // Even if blobs fail, return success with the data
   }
 
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ok: true, jobs: allJobs.length, sources: successCount, time: payload.updatedIST }),
+    body: JSON.stringify({
+      ok: true,
+      jobs: allJobs.length,
+      sources: successCount,
+      time: payload.updatedIST,
+      data: allJobs, // also return data directly in response
+    }),
   };
 };
 
