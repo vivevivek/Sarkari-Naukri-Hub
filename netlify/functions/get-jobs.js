@@ -1,21 +1,25 @@
 /**
- * get-jobs.js
- * Public GET endpoint: /.netlify/functions/get-jobs
- * Returns the latest jobs JSON that was saved by fetch-jobs.js
- * Called by the website frontend every page load + every 60 min
+ * get-jobs.js — v2
+ * Serves latest jobs to the website frontend
  */
 
 import { getStore } from "@netlify/blobs";
 
-export const handler = async () => {
+export const handler = async (event, context) => {
   const headers = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Cache-Control": "public, max-age=300, stale-while-revalidate=600",
+    "Cache-Control": "public, max-age=300",
   };
 
   try {
-    const store = getStore({ name: "snh-jobs", consistency: "strong" });
+    const store = getStore({
+      name: "snh-jobs",
+      siteID: process.env.SITE_ID || context?.site?.id,
+      token: process.env.NETLIFY_BLOBS_CONTEXT || process.env.TOKEN,
+      consistency: "strong",
+    });
+
     const data = await store.get("latest", { type: "json" });
 
     if (!data) {
@@ -23,7 +27,7 @@ export const handler = async () => {
         statusCode: 200,
         headers,
         body: JSON.stringify({
-          updatedIST: "Fetching for first time...",
+          updatedIST: "Not yet fetched — trigger fetch-jobs first",
           totalJobs: 0,
           sourcesHit: 0,
           totalSources: 38,
@@ -34,12 +38,18 @@ export const handler = async () => {
     }
 
     return { statusCode: 200, headers, body: JSON.stringify(data) };
+
   } catch (err) {
     console.error("get-jobs error:", err.message);
     return {
-      statusCode: 500,
+      statusCode: 200,
       headers,
-      body: JSON.stringify({ error: err.message, jobs: [] }),
+      body: JSON.stringify({
+        updatedIST: "Error loading data",
+        totalJobs: 0,
+        jobs: [],
+        error: err.message,
+      }),
     };
   }
 };
