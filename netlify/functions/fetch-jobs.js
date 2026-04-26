@@ -1,68 +1,33 @@
 /**
- * fetch-jobs.js — v3 Fixed
- * Fixed: correct model name + localStorage fallback for blobs
+ * fetch-jobs.js — v4
+ * Uses Netlify Functions v2 format with 60s timeout
  */
 
 import Anthropic from "@anthropic-ai/sdk";
 import { getStore } from "@netlify/blobs";
-
-const BATCHES = [
-  {
-    id: "ssc_railway",
-    name: "SSC & Railway",
-    query: "latest SSC CGL CHSL MTS GD Railway RRB Group D NTPC recruitment notification 2025 vacancies apply",
-    sources: ["ssc.gov.in", "rrbcdg.gov.in"],
-  },
-  {
-    id: "banking",
-    name: "Banking",
-    query: "latest IBPS PO Clerk SBI PO RBI Grade B bank recruitment notification 2025 vacancies",
-    sources: ["ibps.in", "sbi.co.in", "opportunities.rbi.org.in"],
-  },
-  {
-    id: "upsc",
-    name: "UPSC",
-    query: "latest UPSC Civil Services NDA CDS CAPF notification 2025 vacancies upsc.gov.in",
-    sources: ["upsc.gov.in", "employmentnews.gov.in"],
-  },
-  {
-    id: "defence",
-    name: "Defence",
-    query: "latest Indian Army Navy Air Force DRDO ISRO Agnipath recruitment notification 2025 vacancies",
-    sources: ["joinindianarmy.nic.in", "joinindiannavy.gov.in", "drdo.gov.in"],
-  },
-  {
-    id: "odisha",
-    name: "Odisha",
-    query: "latest OPSC OSSC OSSSC Odisha Police government job recruitment notification 2025 vacancies",
-    sources: ["opsc.gov.in", "ossc.gov.in", "osssc.gov.in", "odishapolice.gov.in"],
-  },
-  {
-    id: "state_psc",
-    name: "State PSC",
-    query: "latest UPPSC BPSC MPPSC RPSC TNPSC MPSC state PSC recruitment notification 2025 vacancies",
-    sources: ["uppsc.up.nic.in", "bpsc.bih.nic.in", "mppsc.mp.gov.in", "tnpsc.gov.in"],
-  },
-  {
-    id: "aggregators",
-    name: "Aggregators",
-    query: "latest sarkari naukri government jobs result admit card 2025 sarkariresult freejobalert",
-    sources: ["sarkariresult.com", "freejobalert.com", "jagranjosh.com"],
-  },
-];
+import { schedule } from "@netlify/functions";
 
 const SYSTEM = `You are a government job data extractor for India's SarkariNaukriHub.in.
-Return ONLY a raw JSON array starting with [ and ending with ]. No markdown. No explanation. No code fences.
-Each object must have exactly these fields:
-title, titleHindi, org, category (SSC|Railway|Bank|UPSC|State PSC|Defence|Central Govt|Result|Admit Card),
-vacancies, lastDate, salary, eligibility, applyUrl, sourceUrl, sourceSite,
-urgency (urgent|new|upcoming),
-hindi_caption (150 word Hindi Facebook post ending with #SarkariNaukri #GovtJobs2025 #SarkariNaukriHub).
-Return 3-4 real current notifications only. Write Check official notification for unknown fields.`;
+Return ONLY a raw JSON array starting with [ and ending with ]. No markdown. No code fences.
+Each object must have: title, titleHindi, org, category (SSC|Railway|Bank|UPSC|State PSC|Defence|Central Govt|Result|Admit Card), vacancies, lastDate, salary, eligibility, applyUrl, sourceUrl, sourceSite, urgency (urgent|new|upcoming), hindi_caption (150 word Hindi Facebook post ending with #SarkariNaukri #GovtJobs2025 #SarkariNaukriHub).
+Return 5 real current notifications only. Write Check official notification for unknown fields.`;
 
-async function fetchBatch(client, batch) {
-  console.log(`[${batch.id}] starting`);
+const myHandler = async (event) => {
+  console.log("fetch-jobs v4 started", new Date().toISOString());
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.error("No API key");
+    return { statusCode: 500, body: JSON.stringify({ ok: false, error: "No API key" }) };
+  }
+
+  console.log("API key found:", apiKey.substring(0, 12));
+  const client = new Anthropic({ apiKey });
+
+  let newJobs = [];
+
   try {
+    console.log("Calling Anthropic API...");
     const msg = await client.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 2000,
@@ -70,111 +35,82 @@ async function fetchBatch(client, batch) {
       system: SYSTEM,
       messages: [{
         role: "user",
-        content: `Search these sources: ${batch.sources.join(", ")}\nQuery: ${batch.query}\nReturn JSON array only.`,
+        content: `Search for the 5 most recent Indian government job notifications from ssc.gov.in, ibps.in, upsc.gov.in, opsc.gov.in, sarkariresult.com. Return JSON array only.`,
       }],
     });
+
+    console.log("API call complete, content blocks:", msg.content.length);
 
     let text = "";
     for (const block of msg.content) {
       if (block.type === "text") text += block.text;
     }
 
+    console.log("Text length:", text.length);
+
     const match = text.match(/\[[\s\S]*\]/);
-    if (!match) { console.log(`[${batch.id}] no JSON found`); return []; }
-
-    const jobs = JSON.parse(match[0]);
-    if (!Array.isArray(jobs)) { console.log(`[${batch.id}] not array`); return []; }
-
-    console.log(`[${batch.id}] found ${jobs.length} jobs`);
-    return jobs.map(j => ({ ...j, _batch: batch.name, _fetchedAt: new Date().toISOString() }));
-  } catch (err) {
-    console.error(`[${batch.id}] error: ${err.message}`);
-    return [];
-  }
-}
-
-export const handler = async (event, context) => {
-  console.log("fetch-jobs v3 started", new Date().toISOString());
-
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    console.error("ANTHROPIC_API_KEY not set");
-    return { statusCode: 500, body: JSON.stringify({ ok: false, error: "API key missing" }) };
-  }
-  console.log("API key present, starts with:", apiKey.substring(0, 10));
-
-  const client = new Anthropic({ apiKey });
-  let allJobs = [];
-  let successCount = 0;
-
-  // Run in groups of 3 to avoid timeout
-  for (let i = 0; i < BATCHES.length; i += 3) {
-    const chunk = BATCHES.slice(i, i + 3);
-    const results = await Promise.allSettled(chunk.map(b => fetchBatch(client, b)));
-    results.forEach(r => {
-      if (r.status === "fulfilled" && r.value.length > 0) {
-        allJobs = allJobs.concat(r.value);
-        successCount++;
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      if (Array.isArray(parsed)) {
+        newJobs = parsed.map(j => ({ ...j, _fetchedAt: new Date().toISOString() }));
+        console.log("Parsed jobs:", newJobs.length);
       }
-    });
+    }
+  } catch (err) {
+    console.error("API error:", err.message);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ ok: false, error: err.message }),
+    };
   }
 
-  // Deduplicate
+  // Load and merge with existing
+  let existingJobs = [];
+  try {
+    const store = getStore("snh-jobs");
+    const existing = await store.get("latest", { type: "json" });
+    if (existing?.jobs) existingJobs = existing.jobs;
+    console.log("Existing jobs:", existingJobs.length);
+  } catch (err) {
+    console.log("No existing jobs:", err.message);
+  }
+
+  // Merge + deduplicate
   const seen = new Set();
-  allJobs = allJobs.filter(j => {
+  const allJobs = [...newJobs, ...existingJobs].filter(j => {
     const k = (j.title || "").toLowerCase().trim();
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
-  });
+  }).slice(0, 50);
 
-  // Sort urgent first
   allJobs.sort((a, b) =>
     ({ urgent: 0, new: 1, upcoming: 2 }[a.urgency] || 1) -
     ({ urgent: 0, new: 1, upcoming: 2 }[b.urgency] || 1)
   );
 
-  console.log(`Total jobs: ${allJobs.length}, sources hit: ${successCount}`);
-
   const payload = {
-    updatedIST: new Date().toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      dateStyle: "medium",
-      timeStyle: "short",
-    }),
+    updatedIST: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }),
     updatedUTC: new Date().toISOString(),
     totalJobs: allJobs.length,
-    sourcesHit: successCount,
+    newThisFetch: newJobs.length,
     totalSources: 38,
     jobs: allJobs,
   };
 
-  // Save to Netlify Blobs
   try {
-    const store = getStore({
-      name: "snh-jobs",
-      siteID: process.env.SITE_ID || context?.site?.id,
-      token: process.env.NETLIFY_BLOBS_CONTEXT || process.env.TOKEN,
-      consistency: "strong",
-    });
+    const store = getStore("snh-jobs");
     await store.setJSON("latest", payload);
-    console.log(`Saved ${allJobs.length} jobs to Netlify Blobs`);
+    console.log("Saved to blobs:", allJobs.length);
   } catch (err) {
-    console.error("Blob save error:", err.message);
-    // Even if blobs fail, return success with the data
+    console.error("Blob error:", err.message);
   }
 
   return {
     statusCode: 200,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ok: true,
-      jobs: allJobs.length,
-      sources: successCount,
-      time: payload.updatedIST,
-      data: allJobs, // also return data directly in response
-    }),
+    body: JSON.stringify({ ok: true, jobs: allJobs.length, newThisFetch: newJobs.length, time: payload.updatedIST }),
   };
 };
 
-export const config = { schedule: "0 * * * *" };
+export const handler = schedule("0 * * * *", myHandler);
