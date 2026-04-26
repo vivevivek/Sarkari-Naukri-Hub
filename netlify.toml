@@ -4,4 +4,12 @@
 
 [functions]
   node_bundler = "esbuild"
-  included_files = ["netlify/functions/**"]
+
+[functions."fetch-jobs"]
+  timeout = 300
+
+[functions."get-jobs"]
+  timeout = 30
+
+[functions."manual-fetch"]
+  timeout = 300
