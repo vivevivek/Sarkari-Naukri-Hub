@@ -1,25 +1,22 @@
 /**
- * get-jobs.js — v2
- * Serves latest jobs to the website frontend
+ * get-jobs.js — Final version
+ * Uses SNH_SITE_ID and NETLIFY_BLOBS_TOKEN
  */
 
 import { getStore } from "@netlify/blobs";
 
-export const handler = async (event, context) => {
+export const handler = async () => {
   const headers = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Cache-Control": "public, max-age=300",
   };
 
-  try {
-    const store = getStore({
-      name: "snh-jobs",
-      siteID: process.env.SITE_ID || context?.site?.id,
-      token: process.env.NETLIFY_BLOBS_CONTEXT || process.env.TOKEN,
-      consistency: "strong",
-    });
+  const siteID = process.env.SNH_SITE_ID;
+  const token = process.env.NETLIFY_BLOBS_TOKEN;
 
+  try {
+    const store = getStore({ name: "snh-jobs", siteID, token });
     const data = await store.get("latest", { type: "json" });
 
     if (!data) {
@@ -27,10 +24,8 @@ export const handler = async (event, context) => {
         statusCode: 200,
         headers,
         body: JSON.stringify({
-          updatedIST: "Not yet fetched — trigger fetch-jobs first",
+          updatedIST: "Not fetched yet — run fetch-jobs first",
           totalJobs: 0,
-          sourcesHit: 0,
-          totalSources: 38,
           jobs: [],
           _empty: true,
         }),
@@ -45,7 +40,7 @@ export const handler = async (event, context) => {
       statusCode: 200,
       headers,
       body: JSON.stringify({
-        updatedIST: "Error loading data",
+        updatedIST: "Error",
         totalJobs: 0,
         jobs: [],
         error: err.message,
