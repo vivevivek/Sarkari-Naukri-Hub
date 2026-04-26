@@ -1,9 +1,6 @@
 /**
- * fetch-jobs.js
- * Netlify Background Function — no timeout limit
- * Triggered by visiting /.netlify/functions/fetch-jobs
- * Runs in background, saves to Netlify Blobs
- * Also runs automatically every 60 min via schedule
+ * fetch-jobs.js — Final working version
+ * Uses SNH_SITE_ID and NETLIFY_BLOBS_TOKEN for Netlify Blobs
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -18,16 +15,19 @@ const doFetch = async () => {
   console.log("SNH fetch started", new Date().toISOString());
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    console.error("ANTHROPIC_API_KEY not set");
-    return;
-  }
+  if (!apiKey) { console.error("No API key"); return; }
   console.log("API key OK:", apiKey.substring(0, 12));
+
+  const siteID = process.env.SNH_SITE_ID;
+  const token = process.env.NETLIFY_BLOBS_TOKEN;
+  console.log("Site ID present:", !!siteID);
+  console.log("Token present:", !!token);
 
   const client = new Anthropic({ apiKey });
   let newJobs = [];
 
   try {
+    console.log("Calling Claude API...");
     const msg = await client.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 2000,
@@ -50,20 +50,20 @@ const doFetch = async () => {
       const parsed = JSON.parse(match[0]);
       if (Array.isArray(parsed)) {
         newJobs = parsed.map(j => ({ ...j, _fetchedAt: new Date().toISOString() }));
-        console.log("New jobs:", newJobs.length);
+        console.log("New jobs found:", newJobs.length);
       }
     } else {
-      console.log("No JSON array found in response");
+      console.log("No JSON found in response");
     }
   } catch (err) {
-    console.error("API call failed:", err.message);
+    console.error("API error:", err.message);
     return;
   }
 
-  // Load existing and merge
+  // Load existing jobs
   let existingJobs = [];
   try {
-    const store = getStore("snh-jobs");
+    const store = getStore({ name: "snh-jobs", siteID, token });
     const existing = await store.get("latest", { type: "json" });
     if (existing?.jobs) {
       existingJobs = existing.jobs;
@@ -73,7 +73,7 @@ const doFetch = async () => {
     console.log("No existing jobs:", err.message);
   }
 
-  // Deduplicate
+  // Merge and deduplicate
   const seen = new Set();
   const allJobs = [...newJobs, ...existingJobs].filter(j => {
     const k = (j.title || "").toLowerCase().trim();
@@ -100,26 +100,24 @@ const doFetch = async () => {
     jobs: allJobs,
   };
 
+  // Save to Netlify Blobs
   try {
-    const store = getStore("snh-jobs");
+    const store = getStore({ name: "snh-jobs", siteID, token });
     await store.setJSON("latest", payload);
-    console.log("Saved to Netlify Blobs:", allJobs.length, "jobs");
+    console.log("Saved to blobs:", allJobs.length, "jobs");
   } catch (err) {
-    console.error("Blob save failed:", err.message);
+    console.error("Blob save error:", err.message);
   }
 };
 
-// Background function handler — returns 202 immediately, runs in background
-export const handler = async (event) => {
-  // Start fetch in background (don't await)
-  doFetch().catch(err => console.error("Background fetch error:", err));
-
+export const handler = async () => {
+  doFetch().catch(err => console.error("Fetch error:", err));
   return {
     statusCode: 202,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ok: true,
-      message: "Fetch started in background. Check /.netlify/functions/get-jobs in 60 seconds.",
+      message: "Fetch started. Check /.netlify/functions/get-jobs in 60 seconds.",
     }),
   };
 };
