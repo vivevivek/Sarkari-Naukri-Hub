@@ -1,0 +1,14 @@
+{
+  "name": "sarkarinaukrihub",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "SarkariNaukriHub.in - Auto job fetcher from 38 official sources",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0",
+    "@netlify/blobs": "^8.1.0",
+    "@netlify/functions": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
