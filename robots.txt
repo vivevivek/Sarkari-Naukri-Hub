@@ -1,0 +1,16 @@
+User-agent: *
+Allow: /
+
+User-agent: Googlebot
+Allow: /
+Crawl-delay: 0
+
+User-agent: Bingbot
+Allow: /
+
+Sitemap: https://sarkarinaukrihub.in/sitemap.xml
+
+# Disallow admin
+User-agent: *
+Disallow: /admin/
+Disallow: /admin.html
